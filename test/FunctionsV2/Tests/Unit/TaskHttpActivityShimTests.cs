@@ -15,10 +15,10 @@ using Xunit;
 
 namespace Microsoft.Azure.WebJobs.Extensions.DurableTask.Tests
 {
-    [Trait("Category", PlatformSpecificHelpers.TestCategory)]
     public class TaskHttpActivityShimTests
     {
         [Fact]
+        [Trait("Category", PlatformSpecificHelpers.TestCategory)]
         public void FactoryCachesClientWithoutTimeout()
         {
             var factory = new DurableHttpClientFactory();
@@ -31,6 +31,7 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask.Tests
         }
 
         [Theory]
+        [Trait("Category", PlatformSpecificHelpers.TestCategory)]
         [InlineData(null)]
         [InlineData(-1)]
         [InlineData(600000)]
@@ -52,6 +53,7 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask.Tests
         }
 
         [Theory]
+        [Trait("Category", PlatformSpecificHelpers.TestCategory)]
         [InlineData(0)]
         [InlineData(100)]
         public async Task ExpiredExplicitTimeoutPreservesCancellationCause(int timeoutMilliseconds)
@@ -77,6 +79,7 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask.Tests
         }
 
         [Theory]
+        [Trait("Category", PlatformSpecificHelpers.TestCategory)]
         [InlineData(null)]
         [InlineData(-1)]
         [InlineData(600000)]
@@ -97,6 +100,7 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask.Tests
         }
 
         [Fact]
+        [Trait("Category", PlatformSpecificHelpers.TestCategory)]
         public async Task ConcurrentRequestTimeoutsAreIndependent()
         {
             var longRequestStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -138,6 +142,7 @@ namespace Microsoft.Azure.WebJobs.Extensions.DurableTask.Tests
         }
 
         [Theory]
+        [Trait("Category", PlatformSpecificHelpers.TestCategory)]
         [InlineData(-2)]
         [InlineData(4294967295)]
         public async Task InvalidRequestTimeoutIsRejectedBeforeSending(long timeoutMilliseconds)
