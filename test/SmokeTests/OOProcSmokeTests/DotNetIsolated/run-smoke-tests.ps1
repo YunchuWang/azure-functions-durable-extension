@@ -5,11 +5,16 @@
 # This script is designed specifically to test cases where the isolated worker process experiences a platform failure:
 # timeouts, OOMs, etc. For that reason, it is careful to check that the Functions Host is running and healthy at regular
 # intervals. This makes these tests run more slowly than other test categories.
+# Build the app first and select its framework-specific output using -AppDirectory.
+# The default is the Release/net8.0 output; the runner never rebuilds the app.
 
 param(
 	[Parameter(Mandatory=$true)]
 	[string]$HttpStartPath,
-    [switch]$TestWithCustomInstanceId = $false
+    [switch]$TestWithCustomInstanceId = $false,
+    [string]$AppDirectory = (Join-Path $PSScriptRoot 'bin/Release/net8.0'),
+    [ValidateRange(1, 65535)]
+    [int]$Port = 7071
 )
 
 $retryCount = 0;
@@ -20,135 +25,154 @@ $funcLogId = [guid]::NewGuid().ToString("N")
 $funcStandardOutput = Join-Path ([IO.Path]::GetTempPath()) "func-$funcLogId.stdout.log"
 $funcStandardError = Join-Path ([IO.Path]::GetTempPath()) "func-$funcLogId.stderr.log"
 
-# Get the directory where this script is located (the DotNetIsolated folder)
-$scriptDir = $PSScriptRoot
-if ([string]::IsNullOrEmpty($scriptDir)) {
-    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+if (!(Test-Path (Join-Path $AppDirectory 'worker.config.json') -PathType Leaf)) {
+    throw "No built Functions app found at '$AppDirectory'. Build the selected framework and pass its output directory using -AppDirectory."
 }
-if ([string]::IsNullOrEmpty($scriptDir)) {
-    $scriptDir = "./test/SmokeTests/OOProcSmokeTests/DotNetIsolated"
-}
-Write-Host "Script directory: $scriptDir" -ForegroundColor Cyan
+$AppDirectory = (Resolve-Path $AppDirectory -ErrorAction Stop).Path
+$funcProcess = $null
+$baseUrl = "http://localhost:$Port"
 
-Do {
-    $testIsRunning = $true;
+try {
+    Do {
+        $testIsRunning = $true;
 
-    # Start the functions host if it's not running already.
-    # Then give it up to 1 minute to start up. 
-    # This is a long wait, but from experience the CI can be slow to start up the host, especially after a platform-error.
-    $isFunctionsHostRunning = (Get-Process -Name func -ErrorAction SilentlyContinue)
-    if ($isFunctionsHostRunning -eq $null) {
-        Write-Host "Starting the Functions host..." -ForegroundColor Yellow
-        Write-Host "Working directory: $scriptDir" -ForegroundColor Cyan
+        # Start the functions host if it's not running already.
+        # Then give it up to 1 minute to start up.
+        # This is a long wait, but from experience the CI can be slow to start up the host, especially after a platform-error.
+        if ($funcProcess -eq $null -or $funcProcess.HasExited) {
+            if ($funcProcess -ne $null) {
+                $funcProcess.Dispose()
+                $funcProcess = $null
+            }
+            Write-Host "Starting the Functions host..." -ForegroundColor Yellow
+            Write-Host "Working directory: $AppDirectory" -ForegroundColor Cyan
 
-        Start-Process `
-            -FilePath "func" `
-            -ArgumentList "host", "start", "--port", "7071" `
-            -WorkingDirectory $scriptDir `
-            -RedirectStandardOutput $funcStandardOutput `
-            -RedirectStandardError $funcStandardError
+            $funcProcess = Start-Process `
+                -FilePath "func" `
+                -ArgumentList "host", "start", "--no-build", "--port", "$Port" `
+                -WorkingDirectory $AppDirectory `
+                -RedirectStandardOutput $funcStandardOutput `
+                -RedirectStandardError $funcStandardError `
+                -PassThru `
+                -ErrorAction Stop
+            Write-Host "Functions host PID: $($funcProcess.Id)" -ForegroundColor Cyan
 
-        Write-Host "Waiting for the Functions host to start up..." -ForegroundColor Yellow
-        Start-Sleep -Seconds 60
-    }
+            Write-Host "Waiting for the Functions host to start up..." -ForegroundColor Yellow
+            Start-Sleep -Seconds 60
+        }
 
-    
-    try {
-        # Make sure the Functions runtime is up and running
-        $pingUrl = "http://localhost:7071/admin/host/ping"
-        Write-Host "Pinging app at $pingUrl to ensure the host is healthy" -ForegroundColor Yellow
-        Invoke-RestMethod -Method Post -Uri "http://localhost:7071/admin/host/ping"
-        Write-Host "Host is healthy!" -ForegroundColor Green
 
-        # Start orchestrator if it hasn't been started yet
-        if ($statusUrl -eq $null){
-            $baseUri = "http://localhost:7071/$HttpStartPath"
-
-            $customInstanceId = $null
-            if ($TestWithCustomInstanceId) {
-                $customInstanceId = [guid]::NewGuid().ToString()
-                $startOrchestrationUri = $baseUri + "?instanceId=" + $customInstanceId
-            } else {
-                $startOrchestrationUri = $baseUri
+        try {
+            if ($funcProcess.HasExited) {
+                throw "Functions host process $($funcProcess.Id) exited before the health check."
             }
 
-            Write-Host "Starting a new orchestration instance via POST to $startOrchestrationUri..." -ForegroundColor Yellow
+            # Make sure the Functions runtime is up and running
+            $pingUrl = "$baseUrl/admin/host/ping"
+            Write-Host "Pinging app at $pingUrl to ensure the host is healthy" -ForegroundColor Yellow
+            Invoke-RestMethod -Method Post -Uri $pingUrl
+            Write-Host "Host is healthy!" -ForegroundColor Green
 
-            $result = Invoke-RestMethod -Method Post -Uri $startOrchestrationUri
+            # Start orchestrator if it hasn't been started yet
+            if ($statusUrl -eq $null){
+                $baseUri = "$baseUrl/$HttpStartPath"
 
-            # Check that the returned instance ID matches the requested one (if provided)
-            if ($TestWithCustomInstanceId -and $customInstanceId -and $result.id -ne $customInstanceId) {
-                throw "Returned instance ID '$($result.id)' does not match requested instance ID '$customInstanceId'"
+                $customInstanceId = $null
+                if ($TestWithCustomInstanceId) {
+                    $customInstanceId = [guid]::NewGuid().ToString()
+                    $startOrchestrationUri = $baseUri + "?instanceId=" + $customInstanceId
+                } else {
+                    $startOrchestrationUri = $baseUri
+                }
+
+                Write-Host "Starting a new orchestration instance via POST to $startOrchestrationUri..." -ForegroundColor Yellow
+
+                $result = Invoke-RestMethod -Method Post -Uri $startOrchestrationUri
+
+                # Check that the returned instance ID matches the requested one (if provided)
+                if ($TestWithCustomInstanceId -and $customInstanceId -and $result.id -ne $customInstanceId) {
+                    throw "Returned instance ID '$($result.id)' does not match requested instance ID '$customInstanceId'"
+                }
+
+                Write-Host "Started orchestration with instance ID '$($result.id)'!" -ForegroundColor Yellow
+                Write-Host "Waiting for orchestration to complete..." -ForegroundColor Yellow
+
+                $statusUrl = $result.statusQueryGetUri
+
+                # sleep for a bit to give the orchestrator a chance to start,
+                # then loop once more in case the orchestrator ran quickly, made the host unhealthy,
+                # and the functions host needs to be restarted
+                Start-Sleep -Seconds 5
+                continue;
             }
 
-            Write-Host "Started orchestration with instance ID '$($result.id)'!" -ForegroundColor Yellow
-            Write-Host "Waiting for orchestration to complete..." -ForegroundColor Yellow
+            # Check the orchestrator status
+            $result = Invoke-RestMethod -Method Get -Uri $statusUrl
+            $runtimeStatus = $result.runtimeStatus
+            Write-Host "Orchestration is $runtimeStatus" -ForegroundColor Yellow
+            Write-Host $result
 
-            $statusUrl = $result.statusQueryGetUri
-            
-            # sleep for a bit to give the orchestrator a chance to start,
-            # then loop once more in case the orchestrator ran quickly, made the host unhealthy,
-            # and the functions host needs to be restarted
-            Start-Sleep -Seconds 5
-            continue;
+            if ($result.runtimeStatus -eq "Completed") {
+                $success = $true
+                $testIsRunning = $false
+                break
+            }
+            if ($result.runtimeStatus -eq "Failed") {
+                $success = $false
+                $testIsRunning = $false
+                break
+            }
+
+            # If the orchestrator did not complete yet, wait for a bit before checking again
+            Start-Sleep -Seconds 2
+            $retryCount = $retryCount + 1
+
+        } catch {
+            # we expect to enter this 'catch' block if any of our HTTP requests to the host fail.
+            # Some failures observed during development include:
+            # - The host is not running/was restarting/was killed
+            # - The host is running but not healthy (OOMs may cause this), so it needs to be forcibly restarted
+            Write-Host "An error occurred:" -ForegroundColor Red
+            Write-Host $_ -ForegroundColor Red
+            Get-Content $funcStandardOutput -Tail 100 -ErrorAction SilentlyContinue
+            Get-Content $funcStandardError -Tail 100 -ErrorAction SilentlyContinue
+
+            # When testing for platform errors, we want to make sure the Functions host is healthy and ready to take requests.
+            # The Host can get into bad states (for example, in an OOM-inducing test) where it does not self-heal.
+            # For these cases, we manually restart the host to ensure it is in a good state. We only do this once per test.
+            if ($haveManuallyRestartedHost -eq $false) {
+
+                # We stop the host process and wait for a bit before checking if it is running again.
+                Write-Host "Restarting the Functions host..." -ForegroundColor Yellow
+                if (!$funcProcess.HasExited) {
+                    Stop-Process -Id $funcProcess.Id -Force -ErrorAction Stop
+                    $funcProcess.WaitForExit()
+                }
+
+                Start-Sleep -Seconds 5
+
+                # Log whether the process kill succeeded
+                $haveManuallyRestartedHost = $true
+                Write-Host "Host process killed: $($funcProcess.HasExited)" -ForegroundColor Yellow
+
+                # the beginning of the loop will restart the host
+                continue
+            }
+
+            # Rethrow the original exception
+            throw
         }
 
-        # Check the orchestrator status
-        $result = Invoke-RestMethod -Method Get -Uri $statusUrl
-        $runtimeStatus = $result.runtimeStatus
-        Write-Host "Orchestration is $runtimeStatus" -ForegroundColor Yellow
-        Write-Host $result
-
-        if ($result.runtimeStatus -eq "Completed") {
-            $success = $true
-            $testIsRunning = $false
-            break
+    } while (($testIsRunning -eq $true) -and ($retryCount -lt 65))
+} finally {
+    if ($funcProcess -ne $null) {
+        if (!$funcProcess.HasExited) {
+            Stop-Process -Id $funcProcess.Id -Force -ErrorAction Stop
+            $funcProcess.WaitForExit()
         }
-        if ($result.runtimeStatus -eq "Failed") {
-            $success = $false
-            $testIsRunning = $false
-            break
-        }
-
-        # If the orchestrator did not complete yet, wait for a bit before checking again
-        Start-Sleep -Seconds 2
-        $retryCount = $retryCount + 1
-
-    } catch {
-        # we expect to enter this 'catch' block if any of our HTTP requests to the host fail.
-        # Some failures observed during development include:
-        # - The host is not running/was restarting/was killed
-        # - The host is running but not healthy (OOMs may cause this), so it needs to be forcibly restarted
-        Write-Host "An error occurred:" -ForegroundColor Red
-        Write-Host $_ -ForegroundColor Red
-        Get-Content $funcStandardOutput -Tail 100 -ErrorAction SilentlyContinue
-        Get-Content $funcStandardError -Tail 100 -ErrorAction SilentlyContinue
-
-        # When testing for platform errors, we want to make sure the Functions host is healthy and ready to take requests.
-        # The Host can get into bad states (for example, in an OOM-inducing test) where it does not self-heal.
-        # For these cases, we manually restart the host to ensure it is in a good state. We only do this once per test.
-        if ($haveManuallyRestartedHost -eq $false) {
-            
-            # We stop the host process and wait for a bit before checking if it is running again.
-            Write-Host "Restarting the Functions host..." -ForegroundColor Yellow
-            Stop-Process -Name "func" -Force -ErrorAction SilentlyContinue
-
-            Start-Sleep -Seconds 5
-            
-            # Log whether the process kill succeeded
-            $haveManuallyRestartedHost = $true
-            $isFunctionsHostRunning = ((Get-Process -Name func -ErrorAction SilentlyContinue) -eq $null)
-            Write-Host "Host process killed: $isFunctionsHostRunning" -ForegroundColor Yellow
-  
-            # the beginning of the loop will restart the host
-            continue
-        }
-
-        # Rethrow the original exception
-        throw
+        $funcProcess.Dispose()
     }
-
-} while (($testIsRunning -eq $true) -and ($retryCount -lt 65))
+}
 
 if ($success -eq $false) {
     throw "Orchestration failed or did not compete in time! :("

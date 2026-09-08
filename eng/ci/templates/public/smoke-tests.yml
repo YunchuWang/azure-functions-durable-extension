@@ -204,11 +204,12 @@ jobs:
         displayName: Start Azurite
       - pwsh: |
           $script = './test/SmokeTests/OOProcSmokeTests/DotNetIsolated/run-smoke-tests.ps1'
-          & $script -HttpStartPath api/StartHelloCitiesTyped
-          & $script -HttpStartPath api/StartHelloCitiesUntyped
-          & $script -HttpStartPath api/StartHelloCitiesUntyped -TestWithCustomInstanceId
-          & $script -HttpStartPath api/durable_HttpStartProcessExitOrchestrator
-          & $script -HttpStartPath api/durable_HttpStartTimeoutOrchestrator
-          & $script -HttpStartPath api/durable_HttpStartOOMOrchestrator
-          & $script -HttpStartPath api/StartEntityOrchestration
+          $appDirectory = './test/SmokeTests/OOProcSmokeTests/DotNetIsolated/bin/Release/$(testTargetFramework)'
+          & $script -HttpStartPath api/StartHelloCitiesTyped -AppDirectory $appDirectory
+          & $script -HttpStartPath api/StartHelloCitiesUntyped -AppDirectory $appDirectory
+          & $script -HttpStartPath api/StartHelloCitiesUntyped -AppDirectory $appDirectory -TestWithCustomInstanceId
+          & $script -HttpStartPath api/durable_HttpStartProcessExitOrchestrator -AppDirectory $appDirectory
+          & $script -HttpStartPath api/durable_HttpStartTimeoutOrchestrator -AppDirectory $appDirectory
+          & $script -HttpStartPath api/durable_HttpStartOOMOrchestrator -AppDirectory $appDirectory
+          & $script -HttpStartPath api/StartEntityOrchestration -AppDirectory $appDirectory
         displayName: Run .NET isolated smoke tests
