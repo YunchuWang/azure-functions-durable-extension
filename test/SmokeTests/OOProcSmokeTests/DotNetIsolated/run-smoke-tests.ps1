@@ -32,6 +32,31 @@ $AppDirectory = (Resolve-Path $AppDirectory -ErrorAction Stop).Path
 $funcProcess = $null
 $baseUrl = "http://localhost:$Port"
 
+function Stop-FunctionsHost {
+    param($Process)
+
+    # The npm launcher owns the native host and worker. Capture descendants before
+    # stopping it so they cannot become orphaned and hold redirected output open.
+    $allProcesses = @(Get-Process)
+    $ownedProcesses = @($Process)
+    for ($i = 0; $i -lt $ownedProcesses.Count; $i++) {
+        $parentId = $ownedProcesses[$i].Id
+        $ownedProcesses += @($allProcesses | Where-Object { $_.Parent.Id -eq $parentId })
+    }
+
+    Write-Host "Stopping Functions host process tree: $($ownedProcesses.Id -join ', ')" -ForegroundColor Yellow
+    for ($i = $ownedProcesses.Count - 1; $i -ge 0; $i--) {
+        if (!$ownedProcesses[$i].HasExited) {
+            Stop-Process -Id $ownedProcesses[$i].Id -Force -ErrorAction Stop
+        }
+    }
+
+    # A parameterless wait also waits for redirected-stream EOF on Linux.
+    if (!$Process.WaitForExit(5000)) {
+        throw "Functions host process $($Process.Id) did not exit within 5 seconds."
+    }
+}
+
 try {
     Do {
         $testIsRunning = $true;
@@ -145,8 +170,7 @@ try {
                 # We stop the host process and wait for a bit before checking if it is running again.
                 Write-Host "Restarting the Functions host..." -ForegroundColor Yellow
                 if (!$funcProcess.HasExited) {
-                    Stop-Process -Id $funcProcess.Id -Force -ErrorAction Stop
-                    $funcProcess.WaitForExit()
+                    Stop-FunctionsHost -Process $funcProcess
                 }
 
                 Start-Sleep -Seconds 5
@@ -167,8 +191,7 @@ try {
 } finally {
     if ($funcProcess -ne $null) {
         if (!$funcProcess.HasExited) {
-            Stop-Process -Id $funcProcess.Id -Force -ErrorAction Stop
-            $funcProcess.WaitForExit()
+            Stop-FunctionsHost -Process $funcProcess
         }
         $funcProcess.Dispose()
     }
