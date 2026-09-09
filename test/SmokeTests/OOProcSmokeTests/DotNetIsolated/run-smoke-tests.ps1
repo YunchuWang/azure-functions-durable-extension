@@ -1,3 +1,5 @@
+#Requires -Version 7.0
+
 # This is a simple test runner to validate the .NET isolated smoke tests.
 # It supercedes the usual e2e-tests.ps1 script for the .NET isolated scenario because building the snmoke test app
 # on the docker image is unreliable. For more details, see: https://github.com/Azure/azure-functions-host/issues/7995
